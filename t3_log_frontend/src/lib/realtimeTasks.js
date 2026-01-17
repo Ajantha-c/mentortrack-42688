@@ -9,53 +9,65 @@ import { supabase } from "./supabaseClient";
 
 const TASKS_TABLE = "tasks";
 
+/**
+ * NOTE ABOUT CHANNEL NAMING
+ * Requirements specify using: supabase.channel('tasks-channel')
+ * We therefore use a single shared channel name and optionally apply a row filter
+ * at the postgres_changes subscription level.
+ */
+
 // PUBLIC_INTERFACE
 export function subscribeToTasksChanges({
-  /** userId filter: listen only to tasks for a specific intern */
+  /** optional: limit events to one intern user_id */
   userId,
-  /** callback invoked for INSERT/UPDATE/DELETE events */
+  /** callback invoked for UPDATE events (and any others if enabled below) */
   onChange,
   /** optional callback when subscription state changes */
   onStatus,
+  /** optional: which events to subscribe to. Default per requirements: UPDATE only */
+  events = ["UPDATE"],
 }) {
   /**
-   * Subscribes to changes on `tasks` for a specific user_id.
+   * Subscribes to changes on `tasks`.
    *
    * Params:
-   * - userId: string (required) - the intern user_id whose tasks we care about
+   * - userId?: string - optional filter for user_id
    * - onChange: function(payload) - Supabase realtime payload
-   * - onStatus: function(status, err) - optional status updates
+   * - onStatus?: function(status, err) - optional status updates
+   * - events?: Array<"INSERT"|"UPDATE"|"DELETE"|"*"> - defaults to ["UPDATE"]
    *
    * Returns:
    * - { unsubscribe: () => Promise<void> }
    */
-  if (!userId) {
-    throw new Error("subscribeToTasksChanges requires userId");
-  }
   if (typeof onChange !== "function") {
     throw new Error("subscribeToTasksChanges requires onChange(payload) callback");
   }
 
-  // Use a stable, user-scoped channel name.
-  const channel = supabase.channel(`tasks:user:${userId}`);
+  // Required shared channel name.
+  const channel = supabase.channel("tasks-channel");
 
-  channel.on(
-    "postgres_changes",
-    {
-      event: "*",
-      schema: "public",
-      table: TASKS_TABLE,
-      filter: `user_id=eq.${userId}`,
-    },
-    (payload) => {
-      try {
-        onChange(payload);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error("[realtime] onChange handler error:", e);
+  const filter = userId ? `user_id=eq.${userId}` : undefined;
+  const uniqueEvents = Array.from(new Set(events && events.length ? events : ["UPDATE"]));
+
+  for (const event of uniqueEvents) {
+    channel.on(
+      "postgres_changes",
+      {
+        event,
+        schema: "public",
+        table: TASKS_TABLE,
+        ...(filter ? { filter } : {}),
+      },
+      (payload) => {
+        try {
+          onChange(payload);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error("[realtime] onChange handler error:", e);
+        }
       }
-    }
-  );
+    );
+  }
 
   channel.subscribe((status, err) => {
     if (typeof onStatus === "function") onStatus(status, err);

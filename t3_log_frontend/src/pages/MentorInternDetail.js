@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { subscribeToTasksChanges } from "../lib/realtimeTasks";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   FaArrowLeft,
@@ -12,10 +13,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabaseClient";
 import { forceDownloadFromSupabaseStorage } from "../utils/download";
-import {
-  parseMeetingDetailsFromTask,
-  subscribeToTasksChanges,
-} from "../lib/realtimeTasks";
+import { parseMeetingDetailsFromTask } from "../lib/realtimeTasks";
 
 /**
  * MentorInternDetail
@@ -204,7 +202,7 @@ export default function MentorInternDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, internId, mentorRole]);
 
-  // NEW: subscribe to changes for this intern so mentor sees live updates too
+  // NEW: subscribe to UPDATE changes for this intern so mentor sees live updates too
   useEffect(() => {
     if (!internId) return undefined;
     if (mentorRole !== "mentor") return undefined;
@@ -213,37 +211,17 @@ export default function MentorInternDetail() {
     try {
       sub = subscribeToTasksChanges({
         userId: internId,
+        events: ["UPDATE"],
         onChange: (payload) => {
-          const eventType = payload?.eventType;
           const newRow = payload?.new || null;
-          const oldRow = payload?.old || null;
+          if (!newRow?.id) return;
 
           setTasks((prev) => {
-            if (eventType === "DELETE") {
-              const id = oldRow?.id;
-              if (!id) return prev;
-              return prev.filter((t) => t.id !== id);
-            }
-
-            if (eventType === "INSERT") {
-              if (!newRow?.id) return prev;
-              const normalized = {
-                ...newRow,
-                attachments: normalizeAttachments(newRow.attachments),
-              };
-              const without = prev.filter((t) => t.id !== normalized.id);
-              return [normalized, ...without].sort(
-                (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-              );
-            }
-
-            // UPDATE
-            if (!newRow?.id) return prev;
             const normalized = {
               ...newRow,
               attachments: normalizeAttachments(newRow.attachments),
             };
-            return prev.map((t) => (t.id === normalized.id ? normalized : t));
+            return (prev || []).map((t) => (t.id === normalized.id ? normalized : t));
           });
         },
       });

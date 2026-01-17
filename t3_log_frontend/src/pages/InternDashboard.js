@@ -231,6 +231,7 @@ export default function InternDashboard() {
     try {
       sub = subscribeToTasksChanges({
         userId: user.id,
+        events: ["UPDATE"],
         onChange: (payload) => {
           const eventType = payload?.eventType;
           const newRow = payload?.new || null;
