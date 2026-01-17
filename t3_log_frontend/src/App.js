@@ -1,7 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { FaUser, FaGraduationCap } from "react-icons/fa";
+import { FaGraduationCap, FaUser } from "react-icons/fa";
+import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { persistSelectedRole, supabase } from "./lib/supabaseClient";
+import { useAuth } from "./contexts/AuthContext";
+import InternDashboard from "./pages/InternDashboard";
+import MentorDashboard from "./pages/MentorDashboard";
+
+const PROFILES_TABLE = "profiles";
 
 /**
  * Landing page with role selection.
@@ -9,8 +15,125 @@ import { persistSelectedRole, supabase } from "./lib/supabaseClient";
  * - Two glassmorphism role cards (Intern/Mentor)
  * - Custom transition: clicking one role slides the opposite card out and fades a welcome+Google sign-in card into the vacated space
  */
+
 // PUBLIC_INTERFACE
 function App() {
+  /** App root: defines routes and role-based root rendering based on Supabase profiles.role. */
+  return (
+    <Routes>
+      <Route path="/" element={<RootRoute />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
+
+/**
+ * RootRoute:
+ * - If unauthenticated => show Login landing
+ * - If authenticated => load role from profiles and render the correct dashboard
+ */
+function RootRoute() {
+  const { user, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
+
+  const [roleLoading, setRoleLoading] = useState(false);
+  const [roleError, setRoleError] = useState(null);
+  const [role, setRole] = useState(null); // "intern" | "mentor" | null
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadRole() {
+      if (!user?.id) return;
+
+      setRoleError(null);
+      setRoleLoading(true);
+
+      const { data, error } = await supabase
+        .from(PROFILES_TABLE)
+        .select("role")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (!mounted) return;
+
+      if (error) {
+        setRoleError(error.message || "Failed to load user role.");
+        setRole(null);
+      } else {
+        const nextRole = data?.role || null;
+        setRole(nextRole);
+
+        // Normalize URL to "/" regardless of where OAuth landed, to avoid 404s.
+        // (The parent router already points everything to "/", but keep it explicit.)
+        navigate("/", { replace: true });
+      }
+
+      setRoleLoading(false);
+    }
+
+    if (user?.id) {
+      void loadRole();
+    } else {
+      // logged out
+      setRole(null);
+      setRoleError(null);
+      setRoleLoading(false);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id, navigate]);
+
+  if (authLoading || roleLoading) {
+    return (
+      <div className="min-h-screen bg-black text-white">
+        <div className="mx-auto max-w-6xl px-6 py-12">
+          Loading {authLoading ? "session" : "role"}…
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginLanding />;
+  }
+
+  if (roleError) {
+    return (
+      <div className="min-h-screen bg-black text-white">
+        <div className="mx-auto max-w-6xl px-6 py-12">
+          <h1 className="text-2xl font-bold">Unable to load role</h1>
+          <p className="mt-3 text-white/70">{roleError}</p>
+          <p className="mt-4 text-sm text-white/60">
+            Ensure a row exists in <span className="font-mono">profiles</span>{" "}
+            with <span className="font-mono">user_id</span> matching your auth
+            user and a <span className="font-mono">role</span> of{" "}
+            <span className="font-mono">intern</span> or{" "}
+            <span className="font-mono">mentor</span>.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-6 inline-flex rounded-xl bg-orange-500 px-5 py-3 font-semibold text-black hover:bg-orange-400"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Role-based dashboard render
+  if (role === "mentor") return <MentorDashboard />;
+  // Default to intern to preserve prior behavior if role is null/unknown.
+  return <InternDashboard />;
+}
+
+// PUBLIC_INTERFACE
+function LoginLanding() {
+  /** Login landing UI used at "/" when unauthenticated. */
   const [selectedRole, setSelectedRole] = useState(null); // "intern" | "mentor" | null
   const [authError, setAuthError] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -56,7 +179,7 @@ function App() {
     setAuthError(null);
     setAuthLoading(true);
 
-    // Persist role so we can read it after Google redirects back.
+    // Persist role so we can read it after Google redirects back (used by back-end or future flows).
     persistSelectedRole(selectedRole);
 
     // In CRA, env vars must be prefixed with REACT_APP_.
@@ -235,7 +358,15 @@ function RoleCard({ icon, title, description, buttonText, onClick }) {
 /**
  * Welcome card shown after role is selected (Google sign-in).
  */
-function WelcomeCard({ title, subtitle, googleLabel, onBack, onGoogle, isLoading, error }) {
+function WelcomeCard({
+  title,
+  subtitle,
+  googleLabel,
+  onBack,
+  onGoogle,
+  isLoading,
+  error,
+}) {
   return (
     <GlassContainer>
       <div className="flex flex-col items-start">
@@ -254,9 +385,7 @@ function WelcomeCard({ title, subtitle, googleLabel, onBack, onGoogle, isLoading
         </button>
 
         {error ? (
-          <p className="mt-3 text-sm font-semibold text-red-100/95">
-            {error}
-          </p>
+          <p className="mt-3 text-sm font-semibold text-red-100/95">{error}</p>
         ) : null}
 
         <button
