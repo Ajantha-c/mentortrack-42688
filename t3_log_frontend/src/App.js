@@ -1,16 +1,19 @@
 import React, { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FaUser, FaGraduationCap } from "react-icons/fa";
+import { persistSelectedRole, supabase } from "./lib/supabaseClient";
 
 /**
  * Landing page with role selection.
  * - Full-screen teal gradient background
  * - Two glassmorphism role cards (Intern/Mentor)
- * - Custom transition: clicking one role slides the opposite card out and fades a welcome+Google placeholder card into the vacated space
+ * - Custom transition: clicking one role slides the opposite card out and fades a welcome+Google sign-in card into the vacated space
  */
 // PUBLIC_INTERFACE
 function App() {
   const [selectedRole, setSelectedRole] = useState(null); // "intern" | "mentor" | null
+  const [authError, setAuthError] = useState(null);
+  const [authLoading, setAuthLoading] = useState(false);
 
   const ui = useMemo(() => {
     const isInternSelected = selectedRole === "intern";
@@ -37,8 +40,41 @@ function App() {
 
   // PUBLIC_INTERFACE
   const handlePickRole = (role) => {
-    // Toggle behavior: click same role again returns to initial selection screen.
+    /** Toggle behavior: click same role again returns to initial selection screen. */
+    setAuthError(null);
     setSelectedRole((prev) => (prev === role ? null : role));
+  };
+
+  // PUBLIC_INTERFACE
+  const handleGoogleSignIn = async () => {
+    /** Starts Supabase Google OAuth and persists selected role for post-redirect routing. */
+    if (!selectedRole) {
+      setAuthError("Please select a role first.");
+      return;
+    }
+
+    setAuthError(null);
+    setAuthLoading(true);
+
+    // Persist role so we can read it after Google redirects back.
+    persistSelectedRole(selectedRole);
+
+    // In CRA, env vars must be prefixed with REACT_APP_. Prefer FRONTEND_URL if provided.
+    const redirectTo =
+      process.env.REACT_APP_FRONTEND_URL || window.location.origin;
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo,
+      },
+    });
+
+    // When successful, the browser will redirect to Google immediately.
+    if (error) {
+      setAuthError(error.message || "Failed to start Google sign-in.");
+      setAuthLoading(false);
+    }
   };
 
   return (
@@ -96,6 +132,9 @@ function App() {
                       subtitle="Sign in to review submissions and guide intern growth."
                       onBack={() => setSelectedRole(null)}
                       googleLabel="Sign in with Google"
+                      onGoogle={handleGoogleSignIn}
+                      isLoading={authLoading}
+                      error={authError}
                     />
                   </motion.div>
                 ) : null}
@@ -136,6 +175,9 @@ function App() {
                       subtitle="Sign in to access your tasks, logs, and progress analytics."
                       onBack={() => setSelectedRole(null)}
                       googleLabel="Sign in with Google"
+                      onGoogle={handleGoogleSignIn}
+                      isLoading={authLoading}
+                      error={authError}
                     />
                   </motion.div>
                 ) : null}
@@ -190,9 +232,9 @@ function RoleCard({ icon, title, description, buttonText, onClick }) {
 }
 
 /**
- * Welcome card shown after role is selected (Google sign-in placeholder only).
+ * Welcome card shown after role is selected (Google sign-in).
  */
-function WelcomeCard({ title, subtitle, googleLabel, onBack }) {
+function WelcomeCard({ title, subtitle, googleLabel, onBack, onGoogle, isLoading, error }) {
   return (
     <GlassContainer>
       <div className="flex flex-col items-start">
@@ -201,17 +243,20 @@ function WelcomeCard({ title, subtitle, googleLabel, onBack }) {
 
         <button
           type="button"
-          onClick={() => {
-            // No auth yet, per requirements. This is a placeholder.
-            // eslint-disable-next-line no-alert
-            alert("Google authentication is not implemented yet.");
-          }}
-          className="mt-6 inline-flex w-full items-center justify-center gap-3 rounded-xl bg-white px-5 py-3 text-sm font-bold text-slate-900 transition hover:bg-white/90 focus:outline-none focus:ring-2 focus:ring-white/70 focus:ring-offset-2 focus:ring-offset-teal-700"
+          onClick={onGoogle}
+          disabled={isLoading}
+          className="mt-6 inline-flex w-full items-center justify-center gap-3 rounded-xl bg-white px-5 py-3 text-sm font-bold text-slate-900 transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-70 focus:outline-none focus:ring-2 focus:ring-white/70 focus:ring-offset-2 focus:ring-offset-teal-700"
           aria-label={googleLabel}
         >
           <GoogleGMark />
-          <span>{googleLabel}</span>
+          <span>{isLoading ? "Redirecting…" : googleLabel}</span>
         </button>
+
+        {error ? (
+          <p className="mt-3 text-sm font-semibold text-red-100/95">
+            {error}
+          </p>
+        ) : null}
 
         <button
           type="button"
@@ -226,7 +271,7 @@ function WelcomeCard({ title, subtitle, googleLabel, onBack }) {
 }
 
 /**
- * Minimal Google "G" mark (inline SVG) to make the button feel high-fidelity without implementing auth.
+ * Minimal Google "G" mark (inline SVG).
  */
 function GoogleGMark() {
   return (
