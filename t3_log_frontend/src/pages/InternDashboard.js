@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   FaDownload,
@@ -9,7 +9,7 @@ import {
   FaSignOutAlt,
   FaUserCircle,
 } from "react-icons/fa";
-import { Bell, X } from "lucide-react";
+import { X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../contexts/AuthContext";
 import { useAppState } from "../contexts/AppStateContext";
@@ -22,21 +22,13 @@ import {
 /**
  * Intern Dashboard (T3 Log) — Supabase-backed
  *
- * Adds:
- * - Real-time subscriptions to `tasks` table via supabase.channel() so mentor actions sync instantly.
- * - Task status visualization:
- *    - status = reviewed => light green background + "Reviewed Successfully" badge
- *    - status = meeting_scheduled => light yellow background + meeting details shown
- * - Mentor remarks bubble inside the task card if mentor_remarks is present.
- * - Notification system:
- *    - Global red dot on avatar/bell when any task has new mentor updates not yet viewed by intern
- *    - Per-card "New Feedback" pulse until the intern opens the card to read.
+ * Realtime:
+ * - Keeps real-time updates from the `tasks` table (mentor status/remarks/meeting updates)
+ *   via supabase.channel() subscriptions (UPDATE events).
  *
- * NOTE: This implementation assumes the `tasks` table includes:
- * - status (string, nullable)
- * - mentor_remarks (string, nullable)
- * and meeting details are stored either in:
- * - meeting_details (json/json-string), or meeting_scheduled_at/meeting_datetime + meeting_agenda
+ * IMPORTANT:
+ * - Notification system (bell, dropdown, unread red dots, pulse animations, is_read updates)
+ *   has been fully removed per user request.
  */
 
 const PROFILES_TABLE = "profiles";
@@ -52,35 +44,6 @@ const STORAGE_ROOT = "tasks";
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-/**
- * Notification rules (authoritative per spec):
- * - Global red dot if there exists a task where:
- *    status != 'pending' AND is_read = false
- * - Dropdown lists “recent updates” under the same rule (latest updated_at first).
- */
-function taskNeedsNotification(taskRow) {
-  if (!taskRow) return false;
-  const status = (taskRow.status || "pending").toLowerCase();
-  const isRead = Boolean(taskRow.is_read);
-  return status !== "pending" && !isRead;
-}
-
-// PUBLIC_INTERFACE
-async function markTaskAsRead({ userId, taskId }) {
-  /** Marks a task row as read by the intern (best-effort). */
-  if (!userId || !taskId) return;
-
-  // We intentionally update updated_at as well so realtime subscribers refresh consistently.
-  // If updated_at is managed by triggers, this is still safe.
-  const { error } = await supabase
-    .from("tasks")
-    .update({ is_read: true, updated_at: nowIso() })
-    .eq("id", taskId)
-    .eq("user_id", userId);
-
-  if (error) throw error;
 }
 
 function safeName(name) {
@@ -189,15 +152,10 @@ function statusStyle(status) {
   return null;
 }
 
-function glowDotClassName() {
-  // vibrant red dot with subtle glow
-  return "h-2.5 w-2.5 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]";
-}
-
 export default function InternDashboard() {
   /** Main Intern Dashboard page. */
   const { user, loading: authLoading, signOut } = useAuth();
-  const { resetAll, setNotifications } = useAppState();
+  const { resetAll } = useAppState();
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -225,25 +183,9 @@ export default function InternDashboard() {
   const [editOpen, setEditOpen] = useState(false);
   const [editRemoving, setEditRemoving] = useState(() => new Set());
 
-  // Notifications: DB-backed via tasks.is_read, filtered by status != 'pending'
-  const [notifOpen, setNotifOpen] = useState(false);
-  const notifWrapRef = useRef(null);
-
-  // Spec: when user clicks the bell, its red dot should disappear immediately (local UI),
-  // while task-card dots still depend on realtime-updated task.is_read/status.
-  const [bellDotDismissed, setBellDotDismissed] = useState(false);
-
-  // Card details modal for reading mentor remarks + meeting info (marks as read)
+  // Card details modal for viewing mentor remarks + meeting info (no unread/read logic)
   const [viewTaskOpen, setViewTaskOpen] = useState(false);
   const [viewTaskId, setViewTaskId] = useState(null);
-
-  function resetNotificationUiState() {
-    // Resets local notification UI state so the next user doesn't see prior user's dropdown/dots.
-    setNotifOpen(false);
-    setBellDotDismissed(false);
-    setViewTaskOpen(false);
-    setViewTaskId(null);
-  }
 
   const displayName = useMemo(() => {
     const fn = profileFirstName?.trim();
@@ -257,115 +199,6 @@ export default function InternDashboard() {
     return tasks.find((t) => t.id === viewTaskId) || null;
   }, [tasks, viewTaskId]);
 
-  const recentUpdates = useMemo(() => {
-    return (tasks || [])
-      .filter(taskNeedsNotification)
-      .slice()
-      .sort(
-        (a, b) =>
-          new Date(b.updated_at || b.created_at).getTime() -
-          new Date(a.updated_at || a.created_at).getTime()
-      )
-      .slice(0, 8);
-  }, [tasks]);
-
-  /**
-   * The Bell's red dot should calculate its visibility based on:
-   * tasks.some(t => !t.is_read && t.status !== 'pending').
-   *
-   * NOTE: This matches `taskNeedsNotification` (authoritative notification rule).
-   */
-  const hasGlobalNotifications = useMemo(
-    () => (tasks || []).some(taskNeedsNotification),
-    [tasks]
-  );
-
-  // If new notifications arrive after the user dismissed the bell dot, re-enable it.
-  useEffect(() => {
-    if (hasGlobalNotifications) setBellDotDismissed(false);
-  }, [hasGlobalNotifications]);
-
-  // PUBLIC_INTERFACE
-  async function handleSeenTask(taskId) {
-    /**
-     * Marks a task as read in the database (awaited), while immediately updating local
-     * state so the red dot vanishes instantly (optimistic UI).
-     *
-     * This is used by:
-     * - clicking a Task Card
-     * - clicking a Notification Dropdown item
-     * - the Task Details modal opener (via openViewTask)
-     */
-    if (!user?.id || !taskId) return;
-
-    // Optimistic local override first so UX feels instant.
-    setTasks((prev) =>
-      (prev || []).map((t) => (t.id === taskId ? { ...t, is_read: true } : t))
-    );
-
-    try {
-      // Requirement: must await this update
-      const { error } = await supabase
-        .from("tasks")
-        .update({ is_read: true })
-        .eq("id", taskId);
-
-      if (error) throw error;
-    } catch (e) {
-      // Revert optimistic update if DB write fails.
-      // This avoids getting stuck in a "read" state locally when backend rejected it.
-      setTasks((prev) =>
-        (prev || []).map((t) => (t.id === taskId ? { ...t, is_read: false } : t))
-      );
-      // eslint-disable-next-line no-console
-      console.warn("[notifications] handleSeenTask failed:", e);
-    }
-  }
-
-  async function handleMarkAllAsRead() {
-    /** Bulk mark-all-as-read for this intern (awaited) + optimistic local state. */
-    if (!user?.id) return;
-
-    const idsToMark = (tasks || [])
-      .filter(taskNeedsNotification)
-      .map((t) => t.id);
-
-    if (idsToMark.length === 0) {
-      setNotifOpen(false);
-      return;
-    }
-
-    // Optimistic local override first.
-    setTasks((prev) =>
-      (prev || []).map((t) =>
-        idsToMark.includes(t.id) ? { ...t, is_read: true } : t
-      )
-    );
-
-    try {
-      const { error } = await supabase
-        .from("tasks")
-        .update({ is_read: true })
-        .eq("user_id", user.id)
-        .in("id", idsToMark);
-
-      if (error) throw error;
-
-      // Close dropdown; bell dot will naturally disappear due to recomputed state.
-      setNotifOpen(false);
-      setBellDotDismissed(true);
-    } catch (e) {
-      // Revert optimistic update on failure.
-      setTasks((prev) =>
-        (prev || []).map((t) =>
-          idsToMark.includes(t.id) ? { ...t, is_read: false } : t
-        )
-      );
-      // eslint-disable-next-line no-console
-      console.warn("[notifications] mark-all-as-read failed:", e);
-    }
-  }
-
   useEffect(() => {
     // Requirement: guard any fetching when no one is logged in.
     if (!user?.id) return;
@@ -375,49 +208,26 @@ export default function InternDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // Close notifications dropdown when clicking outside or pressing Escape
-  useEffect(() => {
-    if (!notifOpen) return undefined;
-
-    function onDocMouseDown(e) {
-      if (!notifWrapRef.current) return;
-      if (notifWrapRef.current.contains(e.target)) return;
-      setNotifOpen(false);
-    }
-
-    function onKeyDown(e) {
-      if (e.key === "Escape") setNotifOpen(false);
-    }
-
-    document.addEventListener("mousedown", onDocMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onDocMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [notifOpen]);
-
-  // Clear local notification state on sign-out/session end.
-  // This is intentionally inside the dashboard so it resets UI immediately even before navigation.
+  // Clear local state on sign-out/session end (keeps "ghost state" from leaking across users)
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (event === "SIGNED_OUT" || !newSession) {
-        // Requirement: on SIGNED_OUT, notification list is explicitly cleared.
-        setNotifications([]);
         resetAll();
-
-        resetNotificationUiState();
         setTasks([]); // avoid flashing previous user's tasks after sign-out
+        setProfileOpen(false);
+        setEditOpen(false);
+        setViewTaskOpen(false);
+        setViewTaskId(null);
       }
     });
 
     return () => {
       sub?.subscription?.unsubscribe?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetAll, setNotifications]);
+  }, [resetAll]);
 
-  // Realtime subscribe to the intern's own tasks changes (UPDATE only per spec).
+  // Realtime subscribe to the intern's own tasks changes (UPDATE only).
+  // Notification/unread tracking is removed; we still merge any updated rows for live status/remarks.
   useEffect(() => {
     if (!user?.id) return undefined;
 
@@ -430,28 +240,20 @@ export default function InternDashboard() {
           const newRow = payload?.new || null;
           if (!newRow?.id) return;
 
-          /**
-           * Requirement: listen to UPDATE events so mentor feedback/status changes
-           * can reset is_read to false (dot comes back).
-           *
-           * We also avoid clobbering a local optimistic is_read=true with an undefined/null
-           * value from payload, by merging carefully.
-           */
           setTasks((prev) => {
             const normalized = {
               ...newRow,
               attachments: normalizeAttachments(newRow.attachments),
             };
 
-            return (prev || []).map((t) => {
+            // Update if exists; otherwise keep list as-is (interns create tasks locally + refresh).
+            let found = false;
+            const next = (prev || []).map((t) => {
               if (t.id !== normalized.id) return t;
-              return {
-                ...t,
-                ...normalized,
-                is_read:
-                  typeof normalized.is_read === "boolean" ? normalized.is_read : t.is_read,
-              };
+              found = true;
+              return { ...t, ...normalized };
             });
+            return found ? next : next;
           });
         },
         onStatus: (status) => {
@@ -622,7 +424,7 @@ export default function InternDashboard() {
 
         setTasks((prev) => [
           { ...updated, attachments: normalizeAttachments(updated.attachments) },
-          ...prev,
+          ...(prev || []),
         ]);
         resetForm();
       } else {
@@ -645,7 +447,7 @@ export default function InternDashboard() {
         if (error) throw error;
 
         setTasks((prev) =>
-          prev.map((t) =>
+          (prev || []).map((t) =>
             t.id === updated.id
               ? { ...updated, attachments: normalizeAttachments(updated.attachments) }
               : t
@@ -674,12 +476,6 @@ export default function InternDashboard() {
   function openViewTask(task) {
     setViewTaskId(task.id);
     setViewTaskOpen(true);
-    setNotifOpen(false);
-
-    // Requirement: clicking task card and dropdown item must call handleSeenTask(taskId).
-    if (task?.id && taskNeedsNotification(task)) {
-      void handleSeenTask(task.id);
-    }
   }
 
   async function handleDeleteTask(task) {
@@ -699,7 +495,7 @@ export default function InternDashboard() {
 
       if (error) throw error;
 
-      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      setTasks((prev) => (prev || []).filter((t) => t.id !== task.id));
       if (editingId === task.id) {
         resetForm();
         setEditOpen(false);
@@ -768,7 +564,7 @@ export default function InternDashboard() {
       if (error) throw error;
 
       setTasks((prev) =>
-        prev.map((t) =>
+        (prev || []).map((t) =>
           t.id === updated.id
             ? { ...updated, attachments: normalizeAttachments(updated.attachments) }
             : t
@@ -855,122 +651,12 @@ export default function InternDashboard() {
             >
               <div className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/10">
                 <FaUserCircle className="h-5 w-5 text-white/80" />
-                {hasGlobalNotifications ? (
-                  <span className={`absolute -right-0.5 -top-0.5 ${glowDotClassName()}`} />
-                ) : null}
               </div>
               <div className="text-left">
                 <div className="text-xs text-white/50">Intern</div>
                 <div className="text-sm font-extrabold">{displayName}</div>
               </div>
             </button>
-
-            <div className="relative hidden sm:block" ref={notifWrapRef}>
-              <button
-                type="button"
-                onClick={() => {
-                  // Spec: bell dot disappears immediately on bell click.
-                  setBellDotDismissed(true);
-                  setNotifOpen((v) => !v);
-                }}
-                className="relative inline-flex items-center gap-2 rounded-xl bg-white/5 px-4 py-2 text-sm font-semibold ring-1 ring-white/10 hover:bg-white/10"
-                aria-label="Notifications"
-                aria-expanded={notifOpen ? "true" : "false"}
-              >
-                <Bell className="h-4 w-4" />
-                Notifications
-                {hasGlobalNotifications && !bellDotDismissed ? (
-                  <span className={`absolute -right-1 -top-1 ${glowDotClassName()}`} />
-                ) : null}
-              </button>
-
-              <AnimatePresence>
-                {notifOpen ? (
-                  <motion.div
-                    key="notif-dropdown"
-                    initial={{ opacity: 0, y: 10, scale: 0.985 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 8, scale: 0.985 }}
-                    transition={{ duration: 0.18, ease: "easeOut" }}
-                    className="absolute left-0 mt-3 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl bg-white/90 p-3 text-black shadow-2xl ring-1 ring-black/10 backdrop-blur"
-                    role="menu"
-                    aria-label="Recent updates"
-                  >
-                    <div className="flex items-center justify-between gap-2 px-2 pb-2">
-                      <div className="text-sm font-extrabold">Recent updates</div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void handleMarkAllAsRead()}
-                          disabled={!hasGlobalNotifications}
-                          className="inline-flex items-center justify-center rounded-lg bg-black/5 px-2 py-1 text-[11px] font-extrabold ring-1 ring-black/10 hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Mark all as read"
-                          title="Mark all as read"
-                        >
-                          Mark all as read
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setNotifOpen(false)}
-                          className="inline-flex items-center justify-center rounded-lg bg-black/5 px-2 py-1 text-xs font-bold ring-1 ring-black/10 hover:bg-black/10"
-                          aria-label="Close notifications"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {recentUpdates.length === 0 ? (
-                      <div className="rounded-xl bg-black/5 px-3 py-3 text-sm text-black/60 ring-1 ring-black/10">
-                        No new updates.
-                      </div>
-                    ) : (
-                      <div className="max-h-[360px] overflow-auto pr-1">
-                        {recentUpdates.map((t) => {
-                          const status = (t.status || "pending").toLowerCase();
-                          const meeting = parseMeetingDetailsFromTask(t);
-                          const title = t.work_title || "Untitled";
-                          const time = formatDateTime(t.updated_at || t.created_at);
-
-                          // Minimal, clear summary line for the dropdown
-                          const summaryParts = [];
-                          if (status && status !== "pending") summaryParts.push(`Status: ${status}`);
-                          if ((t.mentor_remarks || "").trim()) summaryParts.push("Mentor remarks");
-                          if (status === "meeting_scheduled" && meeting?.datetime) {
-                            summaryParts.push(`Meeting: ${formatDateTime(meeting.datetime)}`);
-                          }
-                          const summary = summaryParts.join(" • ") || "Updated";
-
-                          return (
-                            <button
-                              key={`notif:${t.id}`}
-                              type="button"
-                              onClick={() => {
-                                // Requirement: attach handleSeenTask to every dropdown item.
-                                void handleSeenTask(t.id);
-                                openViewTask(t);
-                              }}
-                              className="group flex w-full items-start gap-3 rounded-xl bg-white px-3 py-3 text-left ring-1 ring-black/10 hover:bg-black/5"
-                              role="menuitem"
-                              aria-label={`Open update for ${title}`}
-                            >
-                              <div className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.35)]" />
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate text-sm font-extrabold">{title}</div>
-                                <div className="mt-0.5 text-xs text-black/60">{summary}</div>
-                                <div className="mt-1 text-[11px] text-black/40">{time}</div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
-            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -992,8 +678,11 @@ export default function InternDashboard() {
               type="button"
               onClick={async () => {
                 // Local UI reset (instant)
-                resetNotificationUiState();
                 setTasks([]);
+                setProfileOpen(false);
+                setEditOpen(false);
+                setViewTaskOpen(false);
+                setViewTaskId(null);
 
                 // Global reset + full reload handled inside AuthContext.signOut()
                 await signOut();
@@ -1159,20 +848,13 @@ export default function InternDashboard() {
                   const style = statusStyle(status);
                   const meeting = parseMeetingDetailsFromTask(t);
                   const hasRemarks = Boolean((t.mentor_remarks || "").trim());
-                  const isUnseen = taskNeedsNotification(t);
 
                   return (
                     <motion.button
                       key={t.id}
                       type="button"
                       layout
-                      onClick={() => {
-                        // Requirement: attach handleSeenTask to task card click.
-                        if (taskNeedsNotification(t)) {
-                          void handleSeenTask(t.id);
-                        }
-                        openViewTask(t);
-                      }}
+                      onClick={() => openViewTask(t)}
                       className="w-full text-left rounded-2xl bg-white/5 p-6 ring-1 ring-white/10 hover:bg-white/7.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
                       style={{
                         backgroundColor: style?.bg || undefined,
@@ -1208,30 +890,6 @@ export default function InternDashboard() {
                                   }}
                                 >
                                   {style.label}
-                                </motion.div>
-                              ) : null}
-                            </AnimatePresence>
-
-                            <AnimatePresence initial={false}>
-                              {isUnseen ? (
-                                <motion.div
-                                  key={`pulse:${t.id}`}
-                                  initial={{ opacity: 0, scale: 0.98 }}
-                                  animate={{ opacity: 1, scale: 1 }}
-                                  exit={{ opacity: 0, scale: 0.98 }}
-                                  className="relative inline-flex items-center gap-2 rounded-full bg-red-500/10 px-3 py-1 text-xs font-extrabold text-red-200 ring-1 ring-red-500/20"
-                                >
-                                  <motion.span
-                                    className="absolute -left-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500"
-                                    animate={{ scale: [1, 1.6, 1], opacity: [1, 0.35, 1] }}
-                                    transition={{
-                                      duration: 1.25,
-                                      repeat: Infinity,
-                                      ease: "easeInOut",
-                                    }}
-                                    aria-hidden="true"
-                                  />
-                                  <span className="pl-2">New Feedback</span>
                                 </motion.div>
                               ) : null}
                             </AnimatePresence>
@@ -1343,7 +1001,9 @@ export default function InternDashboard() {
                                 aria-label={`Download ${a.name || "file"}`}
                               >
                                 <FaDownload style={{ color: "#00f9ef" }} />
-                                <span className="max-w-[220px] truncate">{a.name || "file"}</span>
+                                <span className="max-w-[220px] truncate">
+                                  {a.name || "file"}
+                                </span>
                               </button>
                             ))}
                           </div>

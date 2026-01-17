@@ -4,8 +4,9 @@ import React, { createContext, useContext, useMemo, useState } from "react";
  * Lightweight global UI/data state bucket used to prevent cross-user "ghost" state
  * lingering in memory between sign-out/sign-in.
  *
- * We intentionally keep this simple and page-agnostic. Pages can optionally
- * mirror their local state into this context, and sign-out can reset everything.
+ * NOTE:
+ * - Notification system has been removed from the app (UI + logic), so this context
+ *   no longer carries a notifications array.
  */
 
 const AppStateContext = createContext(null);
@@ -15,7 +16,6 @@ export function AppStateProvider({ children }) {
   /** Provides global app data state setters + a resetAll() helper. */
   const [tasks, setTasks] = useState([]);
   const [profile, setProfile] = useState(null);
-  const [notifications, setNotifications] = useState([]); // reserved for future dedicated notifications table
 
   const value = useMemo(() => {
     return {
@@ -23,8 +23,6 @@ export function AppStateProvider({ children }) {
       setTasks,
       profile,
       setProfile,
-      notifications,
-      setNotifications,
       // PUBLIC_INTERFACE
       resetAll() {
         /**
@@ -33,10 +31,9 @@ export function AppStateProvider({ children }) {
          */
         setTasks([]);
         setProfile(null);
-        setNotifications([]);
       },
     };
-  }, [tasks, profile, notifications]);
+  }, [tasks, profile]);
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }

@@ -6,9 +6,10 @@ import { useAppState } from "./AppStateContext";
  * Auth context for Supabase session + user.
  * Keeps the session in sync via onAuthStateChange and exposes a signOut helper.
  *
- * Ghost notification fix:
- * - On SIGNED_OUT: clear notification-related state (and other stale app state).
- * - On signOut(): reset global state and force a full browser reload to fully purge in-memory state.
+ * NOTE:
+ * - Notification system has been removed from the app (UI + logic).
+ * - We still fully reset app state on SIGNED_OUT and force a reload on signOut()
+ *   to prevent cross-user "ghost" state.
  */
 
 const AuthContext = createContext(null);
@@ -19,7 +20,7 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const { resetAll, setNotifications } = useAppState();
+  const { resetAll } = useAppState();
 
   useEffect(() => {
     let mounted = true;
@@ -44,10 +45,9 @@ export function AuthProvider({ children }) {
       setSession(newSession ?? null);
       setLoading(false);
 
-      // Requirement: if SIGNED_OUT, clear notification list explicitly (and other state).
+      // On SIGNED_OUT, clear state to avoid ghost UI across users.
       if (event === "SIGNED_OUT") {
-        setNotifications([]); // explicit per requirement
-        resetAll(); // also clear tasks/profile/etc to avoid ghost UI
+        resetAll();
       }
     });
 
@@ -55,7 +55,7 @@ export function AuthProvider({ children }) {
       mounted = false;
       sub?.subscription?.unsubscribe();
     };
-  }, [resetAll, setNotifications]);
+  }, [resetAll]);
 
   const value = useMemo(() => {
     const user = session?.user ?? null;
@@ -70,7 +70,7 @@ export function AuthProvider({ children }) {
          * Signs the user out via Supabase auth.
          *
          * Requirement:
-         * - Clear all local state (tasks, profiles, notifications) to eliminate stale memory.
+         * - Clear all local state to eliminate stale memory.
          * - Force a full browser refresh after sign-out to destroy any remaining background memory.
          */
         resetAll();
