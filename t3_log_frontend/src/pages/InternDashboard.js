@@ -259,16 +259,110 @@ export default function InternDashboard() {
     return (tasks || [])
       .filter(taskNeedsNotification)
       .slice()
-      .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())
+      .sort(
+        (a, b) =>
+          new Date(b.updated_at || b.created_at).getTime() -
+          new Date(a.updated_at || a.created_at).getTime()
+      )
       .slice(0, 8);
   }, [tasks]);
 
-  const hasGlobalNotifications = recentUpdates.length > 0;
+  /**
+   * The Bell's red dot should calculate its visibility based on:
+   * tasks.some(t => !t.is_read && t.status !== 'pending').
+   *
+   * NOTE: This matches `taskNeedsNotification` (authoritative notification rule).
+   */
+  const hasGlobalNotifications = useMemo(
+    () => (tasks || []).some(taskNeedsNotification),
+    [tasks]
+  );
 
   // If new notifications arrive after the user dismissed the bell dot, re-enable it.
   useEffect(() => {
     if (hasGlobalNotifications) setBellDotDismissed(false);
   }, [hasGlobalNotifications]);
+
+  // PUBLIC_INTERFACE
+  async function handleSeenTask(taskId) {
+    /**
+     * Marks a task as read in the database (awaited), while immediately updating local
+     * state so the red dot vanishes instantly (optimistic UI).
+     *
+     * This is used by:
+     * - clicking a Task Card
+     * - clicking a Notification Dropdown item
+     * - the Task Details modal opener (via openViewTask)
+     */
+    if (!user?.id || !taskId) return;
+
+    // Optimistic local override first so UX feels instant.
+    setTasks((prev) =>
+      (prev || []).map((t) => (t.id === taskId ? { ...t, is_read: true } : t))
+    );
+
+    try {
+      // Requirement: must await this update
+      const { error } = await supabase
+        .from("tasks")
+        .update({ is_read: true })
+        .eq("id", taskId);
+
+      if (error) throw error;
+    } catch (e) {
+      // Revert optimistic update if DB write fails.
+      // This avoids getting stuck in a "read" state locally when backend rejected it.
+      setTasks((prev) =>
+        (prev || []).map((t) => (t.id === taskId ? { ...t, is_read: false } : t))
+      );
+      // eslint-disable-next-line no-console
+      console.warn("[notifications] handleSeenTask failed:", e);
+    }
+  }
+
+  async function handleMarkAllAsRead() {
+    /** Bulk mark-all-as-read for this intern (awaited) + optimistic local state. */
+    if (!user?.id) return;
+
+    const idsToMark = (tasks || [])
+      .filter(taskNeedsNotification)
+      .map((t) => t.id);
+
+    if (idsToMark.length === 0) {
+      setNotifOpen(false);
+      return;
+    }
+
+    // Optimistic local override first.
+    setTasks((prev) =>
+      (prev || []).map((t) =>
+        idsToMark.includes(t.id) ? { ...t, is_read: true } : t
+      )
+    );
+
+    try {
+      const { error } = await supabase
+        .from("tasks")
+        .update({ is_read: true })
+        .eq("user_id", user.id)
+        .in("id", idsToMark);
+
+      if (error) throw error;
+
+      // Close dropdown; bell dot will naturally disappear due to recomputed state.
+      setNotifOpen(false);
+      setBellDotDismissed(true);
+    } catch (e) {
+      // Revert optimistic update on failure.
+      setTasks((prev) =>
+        (prev || []).map((t) =>
+          idsToMark.includes(t.id) ? { ...t, is_read: false } : t
+        )
+      );
+      // eslint-disable-next-line no-console
+      console.warn("[notifications] mark-all-as-read failed:", e);
+    }
+  }
 
   useEffect(() => {
     if (!user) return;
@@ -328,13 +422,28 @@ export default function InternDashboard() {
           const newRow = payload?.new || null;
           if (!newRow?.id) return;
 
-          // Apply optimistic list updates without full refresh.
+          /**
+           * Requirement: listen to UPDATE events so mentor feedback/status changes
+           * can reset is_read to false (dot comes back).
+           *
+           * We also avoid clobbering a local optimistic is_read=true with an undefined/null
+           * value from payload, by merging carefully.
+           */
           setTasks((prev) => {
             const normalized = {
               ...newRow,
               attachments: normalizeAttachments(newRow.attachments),
             };
-            return (prev || []).map((t) => (t.id === normalized.id ? normalized : t));
+
+            return (prev || []).map((t) => {
+              if (t.id !== normalized.id) return t;
+              return {
+                ...t,
+                ...normalized,
+                is_read:
+                  typeof normalized.is_read === "boolean" ? normalized.is_read : t.is_read,
+              };
+            });
           });
         },
         onStatus: (status) => {
@@ -554,20 +663,9 @@ export default function InternDashboard() {
     setViewTaskOpen(true);
     setNotifOpen(false);
 
-    // Mark as read (best-effort) to clear the red dot across devices.
-    if (user?.id && task?.id && taskNeedsNotification(task)) {
-      void (async () => {
-        try {
-          await markTaskAsRead({ userId: user.id, taskId: task.id });
-          // Optimistically reflect in local state immediately
-          setTasks((prev) =>
-            (prev || []).map((t) => (t.id === task.id ? { ...t, is_read: true } : t))
-          );
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn("[notifications] mark as read failed:", e);
-        }
-      })();
+    // Requirement: clicking task card and dropdown item must call handleSeenTask(taskId).
+    if (task?.id && taskNeedsNotification(task)) {
+      void handleSeenTask(task.id);
     }
   }
 
@@ -785,16 +883,30 @@ export default function InternDashboard() {
                     role="menu"
                     aria-label="Recent updates"
                   >
-                    <div className="flex items-center justify-between px-2 pb-2">
+                    <div className="flex items-center justify-between gap-2 px-2 pb-2">
                       <div className="text-sm font-extrabold">Recent updates</div>
-                      <button
-                        type="button"
-                        onClick={() => setNotifOpen(false)}
-                        className="inline-flex items-center justify-center rounded-lg bg-black/5 px-2 py-1 text-xs font-bold ring-1 ring-black/10 hover:bg-black/10"
-                        aria-label="Close notifications"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleMarkAllAsRead()}
+                          disabled={!hasGlobalNotifications}
+                          className="inline-flex items-center justify-center rounded-lg bg-black/5 px-2 py-1 text-[11px] font-extrabold ring-1 ring-black/10 hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label="Mark all as read"
+                          title="Mark all as read"
+                        >
+                          Mark all as read
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setNotifOpen(false)}
+                          className="inline-flex items-center justify-center rounded-lg bg-black/5 px-2 py-1 text-xs font-bold ring-1 ring-black/10 hover:bg-black/10"
+                          aria-label="Close notifications"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
 
                     {recentUpdates.length === 0 ? (
@@ -822,7 +934,11 @@ export default function InternDashboard() {
                             <button
                               key={`notif:${t.id}`}
                               type="button"
-                              onClick={() => openViewTask(t)}
+                              onClick={() => {
+                                // Requirement: attach handleSeenTask to every dropdown item.
+                                void handleSeenTask(t.id);
+                                openViewTask(t);
+                              }}
                               className="group flex w-full items-start gap-3 rounded-xl bg-white px-3 py-3 text-left ring-1 ring-black/10 hover:bg-black/5"
                               role="menuitem"
                               aria-label={`Open update for ${title}`}
@@ -1035,7 +1151,13 @@ export default function InternDashboard() {
                       key={t.id}
                       type="button"
                       layout
-                      onClick={() => openViewTask(t)}
+                      onClick={() => {
+                        // Requirement: attach handleSeenTask to task card click.
+                        if (taskNeedsNotification(t)) {
+                          void handleSeenTask(t.id);
+                        }
+                        openViewTask(t);
+                      }}
                       className="w-full text-left rounded-2xl bg-white/5 p-6 ring-1 ring-white/10 hover:bg-white/7.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
                       style={{
                         backgroundColor: style?.bg || undefined,
