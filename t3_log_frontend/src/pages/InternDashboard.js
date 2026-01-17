@@ -227,9 +227,21 @@ export default function InternDashboard() {
   const [notifOpen, setNotifOpen] = useState(false);
   const notifWrapRef = useRef(null);
 
+  // Spec: when user clicks the bell, its red dot should disappear immediately (local UI),
+  // while task-card dots still depend on realtime-updated task.is_read/status.
+  const [bellDotDismissed, setBellDotDismissed] = useState(false);
+
   // Card details modal for reading mentor remarks + meeting info (marks as read)
   const [viewTaskOpen, setViewTaskOpen] = useState(false);
   const [viewTaskId, setViewTaskId] = useState(null);
+
+  function resetNotificationUiState() {
+    // Resets local notification UI state so the next user doesn't see prior user's dropdown/dots.
+    setNotifOpen(false);
+    setBellDotDismissed(false);
+    setViewTaskOpen(false);
+    setViewTaskId(null);
+  }
 
   const displayName = useMemo(() => {
     const fn = profileFirstName?.trim();
@@ -252,6 +264,11 @@ export default function InternDashboard() {
   }, [tasks]);
 
   const hasGlobalNotifications = recentUpdates.length > 0;
+
+  // If new notifications arrive after the user dismissed the bell dot, re-enable it.
+  useEffect(() => {
+    if (hasGlobalNotifications) setBellDotDismissed(false);
+  }, [hasGlobalNotifications]);
 
   useEffect(() => {
     if (!user) return;
@@ -281,6 +298,22 @@ export default function InternDashboard() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [notifOpen]);
+
+  // Clear local notification state on sign-out/session end.
+  // This is intentionally inside the dashboard so it resets UI immediately even before navigation.
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!newSession) {
+        resetNotificationUiState();
+        setTasks([]); // avoid flashing previous user's tasks after sign-out
+      }
+    });
+
+    return () => {
+      sub?.subscription?.unsubscribe?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Realtime subscribe to the intern's own tasks changes (UPDATE only per spec).
   useEffect(() => {
@@ -724,14 +757,18 @@ export default function InternDashboard() {
             <div className="relative hidden sm:block" ref={notifWrapRef}>
               <button
                 type="button"
-                onClick={() => setNotifOpen((v) => !v)}
+                onClick={() => {
+                  // Spec: bell dot disappears immediately on bell click.
+                  setBellDotDismissed(true);
+                  setNotifOpen((v) => !v);
+                }}
                 className="relative inline-flex items-center gap-2 rounded-xl bg-white/5 px-4 py-2 text-sm font-semibold ring-1 ring-white/10 hover:bg-white/10"
                 aria-label="Notifications"
                 aria-expanded={notifOpen ? "true" : "false"}
               >
                 <Bell className="h-4 w-4" />
                 Notifications
-                {hasGlobalNotifications ? (
+                {hasGlobalNotifications && !bellDotDismissed ? (
                   <span className={`absolute -right-1 -top-1 ${glowDotClassName()}`} />
                 ) : null}
               </button>
@@ -825,6 +862,8 @@ export default function InternDashboard() {
             <button
               type="button"
               onClick={async () => {
+                resetNotificationUiState();
+                setTasks([]);
                 await signOut();
                 window.location.href = "/";
               }}
