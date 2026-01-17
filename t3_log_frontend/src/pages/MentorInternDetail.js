@@ -7,7 +7,7 @@ import {
   FaSignOutAlt,
   FaUserCircle,
 } from "react-icons/fa";
-import { Clock, Send, X } from "lucide-react";
+import { Calendar, Clock, Send, X } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabaseClient";
@@ -124,9 +124,34 @@ export default function MentorInternDetail() {
 
   const [meetingOpen, setMeetingOpen] = useState(false);
   const [meetingTaskId, setMeetingTaskId] = useState(null);
-  const [meetingDateTime, setMeetingDateTime] = useState(""); // input[type=datetime-local] value
+
+  // Meeting picker state:
+  // We keep date and time separate to support calendar/clock pickers and avoid typing.
+  const [meetingDate, setMeetingDate] = useState(""); // YYYY-MM-DD
+  const [meetingTime, setMeetingTime] = useState(""); // HH:mm
   const [meetingAgenda, setMeetingAgenda] = useState("");
   const [meetingError, setMeetingError] = useState(null);
+
+  function combineDateTimeToIso(dateStr, timeStr) {
+    if (!dateStr || !timeStr) return null;
+    // Interpret as local time then convert to ISO for storage.
+    const dt = new Date(`${dateStr}T${timeStr}`);
+    if (Number.isNaN(dt.getTime())) return null;
+    return dt.toISOString();
+  }
+
+  function splitIsoToLocalDateTimeParts(iso) {
+    if (!iso) return { date: "", time: "" };
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return { date: "", time: "" };
+
+    // Convert to "local" parts without timezone drift.
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16); // YYYY-MM-DDTHH:mm
+    const [date, time] = local.split("T");
+    return { date: date || "", time: time || "" };
+  }
 
   const [remarksOpen, setRemarksOpen] = useState(false);
   const [remarksTaskId, setRemarksTaskId] = useState(null);
@@ -315,16 +340,12 @@ export default function MentorInternDetail() {
   function openMeetingModal(task) {
     setMeetingError(null);
     setMeetingTaskId(task.id);
+
     const existing = parseMeetingDetailsFromTask(task);
-    // datetime-local expects "YYYY-MM-DDTHH:mm"
-    const dt = existing?.datetime ? new Date(existing.datetime) : null;
-    const dtLocalValue =
-      dt && !Number.isNaN(dt.getTime())
-        ? new Date(dt.getTime() - dt.getTimezoneOffset() * 60000)
-            .toISOString()
-            .slice(0, 16)
-        : "";
-    setMeetingDateTime(dtLocalValue);
+    const parts = splitIsoToLocalDateTimeParts(existing?.datetime || null);
+
+    setMeetingDate(parts.date);
+    setMeetingTime(parts.time);
     setMeetingAgenda(existing?.agenda || "");
     setMeetingOpen(true);
   }
@@ -334,8 +355,14 @@ export default function MentorInternDetail() {
     /** Writes meeting schedule fields and sets status='meeting_scheduled'. */
     if (!meetingTaskId) return;
 
-    if (!meetingDateTime) {
-      setMeetingError("Please select a meeting date & time.");
+    if (!meetingDate || !meetingTime) {
+      setMeetingError("Please select a meeting date and time.");
+      return;
+    }
+
+    const dtIso = combineDateTimeToIso(meetingDate, meetingTime);
+    if (!dtIso) {
+      setMeetingError("Invalid date/time selection.");
       return;
     }
 
@@ -343,10 +370,6 @@ export default function MentorInternDetail() {
     setActionBusyId(meetingTaskId);
 
     try {
-      // Convert datetime-local back to ISO string
-      const dt = new Date(meetingDateTime);
-      const dtIso = Number.isNaN(dt.getTime()) ? null : dt.toISOString();
-
       const payload = {
         status: "meeting_scheduled",
         meeting_details: { datetime: dtIso, agenda: meetingAgenda?.trim() || null },
@@ -365,7 +388,8 @@ export default function MentorInternDetail() {
 
       setMeetingOpen(false);
       setMeetingTaskId(null);
-      setMeetingDateTime("");
+      setMeetingDate("");
+      setMeetingTime("");
       setMeetingAgenda("");
     } catch (e) {
       setMeetingError(e?.message || "Failed to schedule meeting.");
@@ -719,6 +743,25 @@ export default function MentorInternDetail() {
                           </div>
 
                           <AnimatePresence initial={false}>
+                            {(t.mentor_remarks || "").trim() ? (
+                              <motion.div
+                                key={`mentor-remarks:${t.id}`}
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 8 }}
+                                transition={{ duration: 0.22, ease: "easeOut" }}
+                                className="relative mt-4 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15"
+                              >
+                                <div className="absolute -top-2 left-6 h-4 w-4 rotate-45 bg-white/10 ring-1 ring-white/15" />
+                                <div className="text-xs font-bold text-white/70">Your Remarks</div>
+                                <div className="mt-2 whitespace-pre-wrap text-sm text-white/85">
+                                  {t.mentor_remarks}
+                                </div>
+                              </motion.div>
+                            ) : null}
+                          </AnimatePresence>
+
+                          <AnimatePresence initial={false}>
                             {status === "meeting_scheduled" && meeting ? (
                               <motion.div
                                 key={`meeting:${t.id}`}
@@ -827,16 +870,75 @@ export default function MentorInternDetail() {
 
               <div className="mt-5 space-y-4">
                 <div>
-                  <label className="text-sm font-semibold text-black/80">
-                    Date & time
-                  </label>
-                  <input
-                    type="datetime-local"
-                    value={meetingDateTime}
-                    onChange={(e) => setMeetingDateTime(e.target.value)}
-                    className="mt-2 w-full rounded-xl bg-white px-4 py-3 text-sm ring-1 ring-black/15 focus:outline-none focus:ring-2"
-                    style={{ outlineColor: "#00f9ef" }}
-                  />
+                  <label className="text-sm font-semibold text-black/80">Date</label>
+
+                  <div className="mt-2 flex items-center gap-2 rounded-xl bg-white px-4 py-3 ring-1 ring-black/15">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const el = document.getElementById("meeting-date-picker");
+                        if (el?.showPicker) el.showPicker();
+                        else el?.click?.();
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg bg-black/5 p-2 ring-1 ring-black/10 hover:bg-black/10"
+                      aria-label="Open date picker"
+                    >
+                      <Calendar className="h-4 w-4" />
+                    </button>
+
+                    <div className="flex-1 text-sm text-black/70">
+                      {meetingDate ? meetingDate : "Select a date"}
+                    </div>
+
+                    {/* Hidden native date input to force system picker (no typing) */}
+                    <input
+                      id="meeting-date-picker"
+                      type="date"
+                      value={meetingDate}
+                      onChange={(e) => setMeetingDate(e.target.value)}
+                      className="sr-only"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-sm font-semibold text-black/80">Time</label>
+
+                  <div className="mt-2 flex items-center gap-2 rounded-xl bg-white px-4 py-3 ring-1 ring-black/15">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const el = document.getElementById("meeting-time-picker");
+                        if (el?.showPicker) el.showPicker();
+                        else el?.click?.();
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg bg-black/5 p-2 ring-1 ring-black/10 hover:bg-black/10"
+                      aria-label="Open time picker"
+                    >
+                      <Clock className="h-4 w-4" />
+                    </button>
+
+                    <div className="flex-1 text-sm text-black/70">
+                      {meetingTime ? meetingTime : "Select a time"}
+                    </div>
+
+                    {/* Hidden native time input to force system picker (no typing) */}
+                    <input
+                      id="meeting-time-picker"
+                      type="time"
+                      value={meetingTime}
+                      onChange={(e) => setMeetingTime(e.target.value)}
+                      className="sr-only"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    />
+                  </div>
+
+                  <div className="mt-1 text-xs text-black/50">
+                    Uses your device’s system pickers.
+                  </div>
                 </div>
 
                 <div>
