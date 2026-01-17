@@ -53,6 +53,35 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/**
+ * Notification rules (authoritative per spec):
+ * - Global red dot if there exists a task where:
+ *    status != 'pending' AND is_read = false
+ * - Dropdown lists “recent updates” under the same rule (latest updated_at first).
+ */
+function taskNeedsNotification(taskRow) {
+  if (!taskRow) return false;
+  const status = (taskRow.status || "pending").toLowerCase();
+  const isRead = Boolean(taskRow.is_read);
+  return status !== "pending" && !isRead;
+}
+
+// PUBLIC_INTERFACE
+async function markTaskAsRead({ userId, taskId }) {
+  /** Marks a task row as read by the intern (best-effort). */
+  if (!userId || !taskId) return;
+
+  // We intentionally update updated_at as well so realtime subscribers refresh consistently.
+  // If updated_at is managed by triggers, this is still safe.
+  const { error } = await supabase
+    .from("tasks")
+    .update({ is_read: true, updated_at: nowIso() })
+    .eq("id", taskId)
+    .eq("user_id", userId);
+
+  if (error) throw error;
+}
+
 function safeName(name) {
   return (name || "file").replace(/[^\w.\-]+/g, "_");
 }
@@ -194,11 +223,11 @@ export default function InternDashboard() {
   const [editOpen, setEditOpen] = useState(false);
   const [editRemoving, setEditRemoving] = useState(() => new Set());
 
-  // NEW: notification + "seen" tracking (local, per device)
-  const [unseenTaskIds, setUnseenTaskIds] = useState(() => new Set());
-  const seenSignaturesRef = useRef(new Map()); // taskId -> signature string
+  // Notifications: DB-backed via tasks.is_read, filtered by status != 'pending'
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifWrapRef = useRef(null);
 
-  // NEW: card details modal for reading mentor remarks + meeting info (clears notifications)
+  // Card details modal for reading mentor remarks + meeting info (marks as read)
   const [viewTaskOpen, setViewTaskOpen] = useState(false);
   const [viewTaskId, setViewTaskId] = useState(null);
 
@@ -214,7 +243,15 @@ export default function InternDashboard() {
     return tasks.find((t) => t.id === viewTaskId) || null;
   }, [tasks, viewTaskId]);
 
-  const hasGlobalNotifications = unseenTaskIds.size > 0;
+  const recentUpdates = useMemo(() => {
+    return (tasks || [])
+      .filter(taskNeedsNotification)
+      .slice()
+      .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())
+      .slice(0, 8);
+  }, [tasks]);
+
+  const hasGlobalNotifications = recentUpdates.length > 0;
 
   useEffect(() => {
     if (!user) return;
@@ -223,7 +260,29 @@ export default function InternDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // NEW: realtime subscribe to the intern's own tasks changes
+  // Close notifications dropdown when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!notifOpen) return undefined;
+
+    function onDocMouseDown(e) {
+      if (!notifWrapRef.current) return;
+      if (notifWrapRef.current.contains(e.target)) return;
+      setNotifOpen(false);
+    }
+
+    function onKeyDown(e) {
+      if (e.key === "Escape") setNotifOpen(false);
+    }
+
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [notifOpen]);
+
+  // Realtime subscribe to the intern's own tasks changes (UPDATE only per spec).
   useEffect(() => {
     if (!user?.id) return undefined;
 
@@ -233,74 +292,17 @@ export default function InternDashboard() {
         userId: user.id,
         events: ["UPDATE"],
         onChange: (payload) => {
-          const eventType = payload?.eventType;
           const newRow = payload?.new || null;
-          const oldRow = payload?.old || null;
+          if (!newRow?.id) return;
 
           // Apply optimistic list updates without full refresh.
           setTasks((prev) => {
-            if (eventType === "DELETE") {
-              const id = oldRow?.id;
-              if (!id) return prev;
-              return prev.filter((t) => t.id !== id);
-            }
-
-            if (eventType === "INSERT") {
-              if (!newRow?.id) return prev;
-              const normalized = {
-                ...newRow,
-                attachments: normalizeAttachments(newRow.attachments),
-              };
-              // New tasks created by intern will also arrive here; keep ordering.
-              const without = prev.filter((t) => t.id !== normalized.id);
-              return [normalized, ...without].sort(
-                (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-              );
-            }
-
-            // UPDATE (or other)
-            if (!newRow?.id) return prev;
             const normalized = {
               ...newRow,
               attachments: normalizeAttachments(newRow.attachments),
             };
-            return prev.map((t) => (t.id === normalized.id ? normalized : t));
+            return (prev || []).map((t) => (t.id === normalized.id ? normalized : t));
           });
-
-          // Mark as unseen when a mentor-relevant change happens (status or remarks changed).
-          // We infer "mentor update" by changes to status/mentor_remarks/meeting fields.
-          const taskId = newRow?.id || oldRow?.id;
-          if (!taskId) return;
-
-          const newSig = [
-            newRow?.status || "",
-            newRow?.mentor_remarks || "",
-            JSON.stringify(parseMeetingDetailsFromTask(newRow) || {}),
-          ].join("|");
-
-          const oldSig = [
-            oldRow?.status || "",
-            oldRow?.mentor_remarks || "",
-            JSON.stringify(parseMeetingDetailsFromTask(oldRow) || {}),
-          ].join("|");
-
-          const isMentorRelevantChange = newSig !== oldSig;
-
-          if (isMentorRelevantChange) {
-            // If the task card is currently open, treat it as seen immediately.
-            setUnseenTaskIds((prev) => {
-              const next = new Set(prev);
-              if (viewTaskId && String(viewTaskId) === String(taskId)) {
-                next.delete(taskId);
-              } else {
-                next.add(taskId);
-              }
-              return next;
-            });
-          }
-
-          // Update the seen signature baseline for comparison.
-          seenSignaturesRef.current.set(taskId, newSig);
         },
         onStatus: (status) => {
           // eslint-disable-next-line no-console
@@ -315,7 +317,7 @@ export default function InternDashboard() {
     return () => {
       void sub?.unsubscribe?.();
     };
-  }, [user?.id, viewTaskId]);
+  }, [user?.id]);
 
   async function loadProfile() {
     if (!user) return;
@@ -351,19 +353,6 @@ export default function InternDashboard() {
         ...t,
         attachments: normalizeAttachments(t.attachments),
       }));
-
-      // Initialize baseline signatures to avoid flagging everything as "new feedback" on first load.
-      const sigMap = new Map();
-      for (const t of normalized) {
-        const sig = [
-          t?.status || "",
-          t?.mentor_remarks || "",
-          JSON.stringify(parseMeetingDetailsFromTask(t) || {}),
-        ].join("|");
-        sigMap.set(t.id, sig);
-      }
-      seenSignaturesRef.current = sigMap;
-      setUnseenTaskIds(new Set());
 
       setTasks(normalized);
     } catch (e) {
@@ -530,12 +519,23 @@ export default function InternDashboard() {
   function openViewTask(task) {
     setViewTaskId(task.id);
     setViewTaskOpen(true);
-    // Clear notifications when intern clicks the card to read.
-    setUnseenTaskIds((prev) => {
-      const next = new Set(prev);
-      next.delete(task.id);
-      return next;
-    });
+    setNotifOpen(false);
+
+    // Mark as read (best-effort) to clear the red dot across devices.
+    if (user?.id && task?.id && taskNeedsNotification(task)) {
+      void (async () => {
+        try {
+          await markTaskAsRead({ userId: user.id, taskId: task.id });
+          // Optimistically reflect in local state immediately
+          setTasks((prev) =>
+            (prev || []).map((t) => (t.id === task.id ? { ...t, is_read: true } : t))
+          );
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("[notifications] mark as read failed:", e);
+        }
+      })();
+    }
   }
 
   async function handleDeleteTask(task) {
@@ -556,11 +556,6 @@ export default function InternDashboard() {
       if (error) throw error;
 
       setTasks((prev) => prev.filter((t) => t.id !== task.id));
-      setUnseenTaskIds((prev) => {
-        const next = new Set(prev);
-        next.delete(task.id);
-        return next;
-      });
       if (editingId === task.id) {
         resetForm();
         setEditOpen(false);
@@ -726,17 +721,13 @@ export default function InternDashboard() {
               </div>
             </button>
 
-            <div className="relative hidden sm:block">
+            <div className="relative hidden sm:block" ref={notifWrapRef}>
               <button
                 type="button"
-                onClick={() => {
-                  // Open the first unseen task for quick access, else no-op.
-                  const first = Array.from(unseenTaskIds)[0];
-                  const t = tasks.find((x) => String(x.id) === String(first));
-                  if (t) openViewTask(t);
-                }}
+                onClick={() => setNotifOpen((v) => !v)}
                 className="relative inline-flex items-center gap-2 rounded-xl bg-white/5 px-4 py-2 text-sm font-semibold ring-1 ring-white/10 hover:bg-white/10"
                 aria-label="Notifications"
+                aria-expanded={notifOpen ? "true" : "false"}
               >
                 <Bell className="h-4 w-4" />
                 Notifications
@@ -744,6 +735,75 @@ export default function InternDashboard() {
                   <span className={`absolute -right-1 -top-1 ${glowDotClassName()}`} />
                 ) : null}
               </button>
+
+              <AnimatePresence>
+                {notifOpen ? (
+                  <motion.div
+                    key="notif-dropdown"
+                    initial={{ opacity: 0, y: 10, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    className="absolute left-0 mt-3 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl bg-white/90 p-3 text-black shadow-2xl ring-1 ring-black/10 backdrop-blur"
+                    role="menu"
+                    aria-label="Recent updates"
+                  >
+                    <div className="flex items-center justify-between px-2 pb-2">
+                      <div className="text-sm font-extrabold">Recent updates</div>
+                      <button
+                        type="button"
+                        onClick={() => setNotifOpen(false)}
+                        className="inline-flex items-center justify-center rounded-lg bg-black/5 px-2 py-1 text-xs font-bold ring-1 ring-black/10 hover:bg-black/10"
+                        aria-label="Close notifications"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    {recentUpdates.length === 0 ? (
+                      <div className="rounded-xl bg-black/5 px-3 py-3 text-sm text-black/60 ring-1 ring-black/10">
+                        No new updates.
+                      </div>
+                    ) : (
+                      <div className="max-h-[360px] overflow-auto pr-1">
+                        {recentUpdates.map((t) => {
+                          const status = (t.status || "pending").toLowerCase();
+                          const meeting = parseMeetingDetailsFromTask(t);
+                          const title = t.work_title || "Untitled";
+                          const time = formatDateTime(t.updated_at || t.created_at);
+
+                          // Minimal, clear summary line for the dropdown
+                          const summaryParts = [];
+                          if (status && status !== "pending") summaryParts.push(`Status: ${status}`);
+                          if ((t.mentor_remarks || "").trim()) summaryParts.push("Mentor remarks");
+                          if (status === "meeting_scheduled" && meeting?.datetime) {
+                            summaryParts.push(`Meeting: ${formatDateTime(meeting.datetime)}`);
+                          }
+                          const summary = summaryParts.join(" • ") || "Updated";
+
+                          return (
+                            <button
+                              key={`notif:${t.id}`}
+                              type="button"
+                              onClick={() => openViewTask(t)}
+                              className="group flex w-full items-start gap-3 rounded-xl bg-white px-3 py-3 text-left ring-1 ring-black/10 hover:bg-black/5"
+                              role="menuitem"
+                              aria-label={`Open update for ${title}`}
+                            >
+                              <div className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.35)]" />
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-sm font-extrabold">{title}</div>
+                                <div className="mt-0.5 text-xs text-black/60">{summary}</div>
+                                <div className="mt-1 text-[11px] text-black/40">{time}</div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
             </div>
           </div>
 
@@ -929,7 +989,7 @@ export default function InternDashboard() {
                   const style = statusStyle(status);
                   const meeting = parseMeetingDetailsFromTask(t);
                   const hasRemarks = Boolean((t.mentor_remarks || "").trim());
-                  const isUnseen = unseenTaskIds.has(t.id);
+                  const isUnseen = taskNeedsNotification(t);
 
                   return (
                     <motion.button
