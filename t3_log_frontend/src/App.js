@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FaGraduationCap, FaUser } from "react-icons/fa";
-import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { persistSelectedRole, supabase } from "./lib/supabaseClient";
 import { useAuth } from "./contexts/AuthContext";
 import InternDashboard from "./pages/InternDashboard";
@@ -31,10 +31,12 @@ function App() {
  * RootRoute:
  * - If unauthenticated => show Login landing
  * - If authenticated => load role from profiles and render the correct dashboard
+ *
+ * Important: do NOT hard-navigate during auth callbacks. Let state drive rendering
+ * at "/" to avoid 404s in preview environments after OAuth redirects/refresh.
  */
 function RootRoute() {
   const { user, loading: authLoading } = useAuth();
-  const navigate = useNavigate();
 
   const [roleLoading, setRoleLoading] = useState(false);
   const [roleError, setRoleError] = useState(null);
@@ -63,10 +65,6 @@ function RootRoute() {
       } else {
         const nextRole = data?.role || null;
         setRole(nextRole);
-
-        // Normalize URL to "/" regardless of where OAuth landed, to avoid 404s.
-        // (The parent router already points everything to "/", but keep it explicit.)
-        navigate("/", { replace: true });
       }
 
       setRoleLoading(false);
@@ -84,7 +82,7 @@ function RootRoute() {
     return () => {
       mounted = false;
     };
-  }, [user?.id, navigate]);
+  }, [user?.id]);
 
   if (authLoading || roleLoading) {
     return (
