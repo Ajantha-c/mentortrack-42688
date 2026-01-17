@@ -12,6 +12,7 @@ import {
 import { Bell, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../contexts/AuthContext";
+import { useAppState } from "../contexts/AppStateContext";
 import { forceDownloadFromSupabaseStorage } from "../utils/download";
 import {
   parseMeetingDetailsFromTask,
@@ -196,6 +197,7 @@ function glowDotClassName() {
 export default function InternDashboard() {
   /** Main Intern Dashboard page. */
   const { user, loading: authLoading, signOut } = useAuth();
+  const { resetAll, setNotifications } = useAppState();
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -365,7 +367,9 @@ export default function InternDashboard() {
   }
 
   useEffect(() => {
-    if (!user) return;
+    // Requirement: guard any fetching when no one is logged in.
+    if (!user?.id) return;
+
     void loadProfile();
     void refreshTasks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -396,8 +400,12 @@ export default function InternDashboard() {
   // Clear local notification state on sign-out/session end.
   // This is intentionally inside the dashboard so it resets UI immediately even before navigation.
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      if (!newSession) {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (event === "SIGNED_OUT" || !newSession) {
+        // Requirement: on SIGNED_OUT, notification list is explicitly cleared.
+        setNotifications([]);
+        resetAll();
+
         resetNotificationUiState();
         setTasks([]); // avoid flashing previous user's tasks after sign-out
       }
@@ -407,7 +415,7 @@ export default function InternDashboard() {
       sub?.subscription?.unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [resetAll, setNotifications]);
 
   // Realtime subscribe to the intern's own tasks changes (UPDATE only per spec).
   useEffect(() => {
@@ -462,7 +470,9 @@ export default function InternDashboard() {
   }, [user?.id]);
 
   async function loadProfile() {
-    if (!user) return;
+    // Requirement: do not fetch when no user
+    if (!user?.id) return;
+
     setProfileError(null);
     setProfileLoading(true);
     try {
@@ -478,11 +488,14 @@ export default function InternDashboard() {
   }
 
   async function refreshTasks() {
-    if (!user) return;
+    // Requirement: do not fetch when no user
+    if (!user?.id) return;
+
     setListError(null);
     setListLoading(true);
 
     try {
+      // Requirement: strictly filter by the current user's auth uid.
       const { data, error } = await supabase
         .from(TASKS_TABLE)
         .select("*")
@@ -978,10 +991,12 @@ export default function InternDashboard() {
             <button
               type="button"
               onClick={async () => {
+                // Local UI reset (instant)
                 resetNotificationUiState();
                 setTasks([]);
+
+                // Global reset + full reload handled inside AuthContext.signOut()
                 await signOut();
-                window.location.href = "/";
               }}
               className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2 text-sm font-extrabold text-black hover:bg-orange-400"
             >
