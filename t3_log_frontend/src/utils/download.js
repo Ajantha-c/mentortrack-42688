@@ -47,6 +47,7 @@ export async function forceDownloadFromSupabaseStorage({ bucket, path, filename 
     a.click();
     a.remove();
   } finally {
-    URL.revokeObjectURL(objectUrl);
+    // Revoke on a microtask to avoid rare cases where immediate revoke cancels the download.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
   }
 }

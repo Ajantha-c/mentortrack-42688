@@ -6,6 +6,7 @@ import { persistSelectedRole, supabase } from "./lib/supabaseClient";
 import { useAuth } from "./contexts/AuthContext";
 import InternDashboard from "./pages/InternDashboard";
 import MentorDashboard from "./pages/MentorDashboard";
+import MentorInternDetail from "./pages/MentorInternDetail";
 
 const PROFILES_TABLE = "profiles";
 
@@ -22,6 +23,8 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<RootRoute />} />
+      <Route path="/mentor" element={<MentorDashboard />} />
+      <Route path="/mentor/interns/:internId" element={<MentorInternDetail />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
@@ -124,7 +127,8 @@ function RootRoute() {
   }
 
   // Role-based dashboard render
-  if (role === "mentor") return <MentorDashboard />;
+  // Mentors should land on the mentor list route for proper deep-linking into intern details.
+  if (role === "mentor") return <Navigate to="/mentor" replace />;
   // Default to intern to preserve prior behavior if role is null/unknown.
   return <InternDashboard />;
 }
