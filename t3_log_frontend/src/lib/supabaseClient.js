@@ -28,8 +28,8 @@ export const supabase = createClient(supabaseUrl || "", supabaseAnonKey || "", {
 
 // PUBLIC_INTERFACE
 export function roleToDashboardPath(role) {
-  /** Maps the selected role to the post-login route. */
-  if (role === "intern") return "/intern/dashboard";
+  /** Maps the selected role to the post-login route. Root ("/") is canonical to avoid 404s. */
+  if (role === "intern") return "/";
   if (role === "mentor") return "/mentor/dashboard";
   return "/";
 }

@@ -1,19 +1,23 @@
 import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useNavigate,
+} from "react-router-dom";
 import "./index.css";
 import App from "./App";
-import {
-  readPersistedRole,
-  roleToDashboardPath,
-  supabase,
-} from "./lib/supabaseClient";
-import { AuthProvider } from "./contexts/AuthContext";
+import { supabase } from "./lib/supabaseClient";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import InternDashboard from "./pages/InternDashboard";
 
 /**
- * Handles post-OAuth session establishment and redirects to the correct dashboard.
- * Supabase will parse the OAuth callback URL and set the session when detectSessionInUrl=true.
+ * Auth redirect behavior (fix for post-sign-in 404):
+ * - We treat "/" as the canonical post-auth landing route.
+ * - Successful auth (OAuth callback or any subsequent sign-in event) navigates to "/".
+ * - When an authenticated user loads the app, we also normalize them to "/".
  */
 function AuthCallbackHandler({ children }) {
   const navigate = useNavigate();
@@ -21,7 +25,7 @@ function AuthCallbackHandler({ children }) {
   useEffect(() => {
     let isMounted = true;
 
-    async function maybeRedirectAfterAuth() {
+    async function normalizeAuthLanding() {
       const {
         data: { session },
         error,
@@ -35,21 +39,21 @@ function AuthCallbackHandler({ children }) {
         return;
       }
 
+      // If the user is already authenticated (including OAuth callback landing),
+      // force them to "/" so we never depend on nested dashboard routes that can 404.
       if (session) {
-        const role = readPersistedRole();
-        navigate(roleToDashboardPath(role), { replace: true });
+        navigate("/", { replace: true });
       }
     }
 
     // Run on initial load (covers OAuth callback landing)
-    maybeRedirectAfterAuth();
+    normalizeAuthLanding();
 
     // Also listen for future auth state transitions
     const { data: subscription } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         if (!session) return;
-        const role = readPersistedRole();
-        navigate(roleToDashboardPath(role), { replace: true });
+        navigate("/", { replace: true });
       }
     );
 
@@ -60,6 +64,25 @@ function AuthCallbackHandler({ children }) {
   }, [navigate]);
 
   return children;
+}
+
+/**
+ * RootRoute:
+ * - If authenticated => show InternDashboard at "/"
+ * - Else => show the landing page (role selection) at "/"
+ */
+function RootRoute() {
+  const { session, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black text-white">
+        <div className="mx-auto max-w-6xl px-6 py-12">Loading session…</div>
+      </div>
+    );
+  }
+
+  return session ? <InternDashboard /> : <App />;
 }
 
 function SimpleDashboard({ title }) {
@@ -82,8 +105,7 @@ root.render(
       <AuthProvider>
         <AuthCallbackHandler>
           <Routes>
-            <Route path="/" element={<App />} />
-            <Route path="/intern/dashboard" element={<InternDashboard />} />
+            <Route path="/" element={<RootRoute />} />
             <Route
               path="/mentor/dashboard"
               element={<SimpleDashboard title="Mentor Dashboard" />}

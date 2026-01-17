@@ -59,9 +59,10 @@ function App() {
     // Persist role so we can read it after Google redirects back.
     persistSelectedRole(selectedRole);
 
-    // In CRA, env vars must be prefixed with REACT_APP_. Prefer FRONTEND_URL if provided.
-    const redirectTo =
-      process.env.REACT_APP_FRONTEND_URL || window.location.origin;
+    // In CRA, env vars must be prefixed with REACT_APP_.
+    // Force OAuth to return to the app root to avoid post-auth 404s.
+    const siteUrl = process.env.REACT_APP_FRONTEND_URL || window.location.origin;
+    const redirectTo = new URL("/", siteUrl).toString();
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
