@@ -9,12 +9,12 @@ import { AppStateProvider } from "./contexts/AppStateContext";
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
-      <AuthProvider>
-        <AppStateProvider>
+    <AppStateProvider>
+      <BrowserRouter>
+        <AuthProvider>
           <App />
-        </AppStateProvider>
-      </AuthProvider>
-    </BrowserRouter>
+        </AuthProvider>
+      </BrowserRouter>
+    </AppStateProvider>
   </React.StrictMode>
 );
