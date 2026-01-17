@@ -8,6 +8,8 @@ import {
   roleToDashboardPath,
   supabase,
 } from "./lib/supabaseClient";
+import { AuthProvider } from "./contexts/AuthContext";
+import InternDashboard from "./pages/InternDashboard";
 
 /**
  * Handles post-OAuth session establishment and redirects to the correct dashboard.
@@ -77,20 +79,19 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
     <BrowserRouter>
-      <AuthCallbackHandler>
-        <Routes>
-          <Route path="/" element={<App />} />
-          <Route
-            path="/intern/dashboard"
-            element={<SimpleDashboard title="Intern Dashboard" />}
-          />
-          <Route
-            path="/mentor/dashboard"
-            element={<SimpleDashboard title="Mentor Dashboard" />}
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </AuthCallbackHandler>
+      <AuthProvider>
+        <AuthCallbackHandler>
+          <Routes>
+            <Route path="/" element={<App />} />
+            <Route path="/intern/dashboard" element={<InternDashboard />} />
+            <Route
+              path="/mentor/dashboard"
+              element={<SimpleDashboard title="Mentor Dashboard" />}
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AuthCallbackHandler>
+      </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>
 );
