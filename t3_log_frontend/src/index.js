@@ -5,6 +5,7 @@ import "./index.css";
 import App from "./App";
 import { AuthProvider } from "./contexts/AuthContext";
 import { AppStateProvider } from "./contexts/AppStateContext";
+import AuthCallbackHandler from "./components/AuthCallbackHandler";
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
@@ -12,7 +13,9 @@ root.render(
     <AppStateProvider>
       <BrowserRouter>
         <AuthProvider>
-          <App />
+          <AuthCallbackHandler>
+            <App />
+          </AuthCallbackHandler>
         </AuthProvider>
       </BrowserRouter>
     </AppStateProvider>

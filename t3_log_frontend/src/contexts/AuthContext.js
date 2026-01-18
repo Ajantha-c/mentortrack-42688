@@ -77,7 +77,8 @@ export function AuthProvider({ children }) {
         await supabase.auth.signOut();
 
         // Force full reload to purge any leftover in-memory state / subscriptions.
-        window.location.href = "/login";
+        // Keep the app on "/" to preserve the single-route structure and avoid 404s.
+        window.location.href = "/";
       },
     };
   }, [session, loading, resetAll]);
