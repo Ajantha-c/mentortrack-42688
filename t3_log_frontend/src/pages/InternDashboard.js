@@ -18,6 +18,7 @@ import {
   parseMeetingDetailsFromTask,
   subscribeToTasksChanges,
 } from "../lib/realtimeTasks";
+import { sendMentorNewTaskEmail } from "../lib/emailjsClient";
 
 /**
  * Intern Dashboard (T3 Log) — Supabase-backed
@@ -130,6 +131,24 @@ async function fetchMentorUserId() {
 
   if (error) throw error;
   return data?.user_id || null;
+}
+
+async function fetchMentorEmail(mentorUserId) {
+  const { data, error } = await supabase
+    .from(PROFILES_TABLE)
+    .select("email")
+    .eq("user_id", mentorUserId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.email || null;
+}
+
+function displayNameFromProfile(p) {
+  const fn = (p?.first_name || "").trim();
+  const ln = (p?.last_name || "").trim();
+  const combined = [fn, ln].filter(Boolean).join(" ");
+  return combined || p?.email || null;
 }
 
 function normalizeAttachments(attachments) {
@@ -441,9 +460,36 @@ export default function InternDashboard() {
           ...(prev || []),
         ]);
 
-        // IMPORTANT:
-        // Email notifications for new tasks are handled server-side via Supabase DB webhooks.
-        // Do NOT call backend notification endpoints directly from the browser (avoids CORS and keeps secrets server-side).
+        // EmailJS notification (client-side) — only after DB writes succeed.
+        // Best-effort: do not block UI submission if EmailJS fails.
+        try {
+          const mentorUserId = await fetchMentorUserId();
+          if (mentorUserId) {
+            const mentorEmail = await fetchMentorEmail(mentorUserId);
+            const internProfile = await fetchProfile(user.id);
+
+            const internName =
+              displayNameFromProfile(internProfile) || user.email || "Intern";
+
+            if (mentorEmail) {
+              await sendMentorNewTaskEmail({
+                mentorEmail,
+                internName,
+                taskTitle: updated?.work_title || workTitle.trim(),
+              });
+            } else {
+              // eslint-disable-next-line no-console
+              console.warn("[emailjs] mentor email missing; skipping email send");
+            }
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[emailjs] mentor user_id not found; skipping email send");
+          }
+        } catch (emailErr) {
+          // eslint-disable-next-line no-console
+          console.warn("[emailjs] mentor new-task email failed:", emailErr);
+        }
+
         resetForm();
       } else {
         // Edit mode here updates just text fields (file management handled in edit modal).

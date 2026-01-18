@@ -14,7 +14,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabaseClient";
 import { forceDownloadFromSupabaseStorage } from "../utils/download";
 import { parseMeetingDetailsFromTask } from "../lib/realtimeTasks";
-import { sendMentorUpdateEmail } from "../lib/backendEmailApi";
+import { sendInternTaskUpdateEmail } from "../lib/emailjsClient";
 
 /**
  * MentorInternDetail
@@ -71,6 +71,17 @@ function displayNameFromProfile(p) {
   const ln = (p?.last_name || "").trim();
   const combined = [fn, ln].filter(Boolean).join(" ");
   return combined || p?.user_id || "Intern";
+}
+
+async function fetchProfileByUserId(userId) {
+  const { data, error } = await supabase
+    .from(PROFILES_TABLE)
+    .select("user_id, first_name, last_name, email")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
 }
 
 function statusStyle(status) {
@@ -310,20 +321,27 @@ export default function MentorInternDetail() {
 
       if (error) throw error;
 
-      // Best-effort: mentor -> intern email notification.
+      // Best-effort: mentor -> intern email notification (EmailJS).
       try {
         const task = tasks.find((x) => x.id === taskId);
-        await sendMentorUpdateEmail({
-          internId,
-          mentorId: user?.id,
-          taskTitle: task?.work_title || "Untitled",
-          status: "reviewed",
-          remarks: null,
-          meetingDatetime: null,
-        });
+        const internProfileRow = await fetchProfileByUserId(internId);
+        const internEmail = internProfileRow?.email || null;
+        const internDisplayName =
+          displayNameFromProfile(internProfileRow) || internId || "Intern";
+
+        if (internEmail) {
+          await sendInternTaskUpdateEmail({
+            internEmail,
+            internName: internDisplayName,
+            taskTitle: task?.work_title || "Untitled",
+          });
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn("[emailjs] intern email missing; skipping email send");
+        }
       } catch (emailErr) {
         // eslint-disable-next-line no-console
-        console.warn("[email] mentor-update (reviewed) failed:", emailErr);
+        console.warn("[emailjs] intern task-update (reviewed) failed:", emailErr);
       }
     } catch (e) {
       alert(e?.message || "Failed to mark as reviewed.");
@@ -381,20 +399,27 @@ export default function MentorInternDetail() {
 
       if (error) throw error;
 
-      // Best-effort: mentor -> intern email notification for meeting scheduling.
+      // Best-effort: mentor -> intern email notification for meeting scheduling (EmailJS).
       try {
         const task = tasks.find((x) => x.id === meetingTaskId);
-        await sendMentorUpdateEmail({
-          internId,
-          mentorId: user?.id,
-          taskTitle: task?.work_title || "Untitled",
-          status: "meeting_scheduled",
-          remarks: meetingAgenda?.trim() || null,
-          meetingDatetime: dtIso,
-        });
+        const internProfileRow = await fetchProfileByUserId(internId);
+        const internEmail = internProfileRow?.email || null;
+        const internDisplayName =
+          displayNameFromProfile(internProfileRow) || internId || "Intern";
+
+        if (internEmail) {
+          await sendInternTaskUpdateEmail({
+            internEmail,
+            internName: internDisplayName,
+            taskTitle: task?.work_title || "Untitled",
+          });
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn("[emailjs] intern email missing; skipping email send");
+        }
       } catch (emailErr) {
         // eslint-disable-next-line no-console
-        console.warn("[email] mentor-update (meeting) failed:", emailErr);
+        console.warn("[emailjs] intern task-update (meeting) failed:", emailErr);
       }
 
       setMeetingOpen(false);
@@ -436,20 +461,27 @@ export default function MentorInternDetail() {
 
       if (error) throw error;
 
-      // Best-effort: mentor -> intern email notification for remarks update.
+      // Best-effort: mentor -> intern email notification for remarks update (EmailJS).
       try {
         const task = tasks.find((x) => x.id === remarksTaskId);
-        await sendMentorUpdateEmail({
-          internId,
-          mentorId: user?.id,
-          taskTitle: task?.work_title || "Untitled",
-          status: task?.status ?? null,
-          remarks: remarksText.trim(),
-          meetingDatetime: parseMeetingDetailsFromTask(task)?.datetime || null,
-        });
+        const internProfileRow = await fetchProfileByUserId(internId);
+        const internEmail = internProfileRow?.email || null;
+        const internDisplayName =
+          displayNameFromProfile(internProfileRow) || internId || "Intern";
+
+        if (internEmail) {
+          await sendInternTaskUpdateEmail({
+            internEmail,
+            internName: internDisplayName,
+            taskTitle: task?.work_title || "Untitled",
+          });
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn("[emailjs] intern email missing; skipping email send");
+        }
       } catch (emailErr) {
         // eslint-disable-next-line no-console
-        console.warn("[email] mentor-update (remarks) failed:", emailErr);
+        console.warn("[emailjs] intern task-update (remarks) failed:", emailErr);
       }
 
       setRemarksOpen(false);
