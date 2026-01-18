@@ -888,12 +888,19 @@ export default function InternDashboard() {
                   const hasRemarks = Boolean((t.mentor_remarks || "").trim());
 
                   return (
-                    <motion.button
+                    <motion.div
                       key={t.id}
-                      type="button"
                       layout
+                      role="button"
+                      tabIndex={0}
                       onClick={() => openViewTask(t)}
-                      className="w-full text-left rounded-2xl bg-white/5 p-6 ring-1 ring-white/10 hover:bg-white/7.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openViewTask(t);
+                        }
+                      }}
+                      className="w-full cursor-pointer text-left rounded-2xl bg-white/5 p-6 ring-1 ring-white/10 hover:bg-white/7.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
                       style={{
                         backgroundColor: style?.bg || undefined,
                         borderColor: style?.ring || undefined,
@@ -1047,7 +1054,7 @@ export default function InternDashboard() {
                           </div>
                         </div>
                       ) : null}
-                    </motion.button>
+                    </motion.div>
                   );
                 })}
               </div>
