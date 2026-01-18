@@ -14,6 +14,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabaseClient";
 import { forceDownloadFromSupabaseStorage } from "../utils/download";
 import { parseMeetingDetailsFromTask } from "../lib/realtimeTasks";
+import { sendMentorUpdateEmail } from "../lib/backendEmailApi";
 
 /**
  * MentorInternDetail
@@ -308,6 +309,22 @@ export default function MentorInternDetail() {
         .eq("user_id", internId);
 
       if (error) throw error;
+
+      // Best-effort: mentor -> intern email notification.
+      try {
+        const task = tasks.find((x) => x.id === taskId);
+        await sendMentorUpdateEmail({
+          internId,
+          mentorId: user?.id,
+          taskTitle: task?.work_title || "Untitled",
+          status: "reviewed",
+          remarks: null,
+          meetingDatetime: null,
+        });
+      } catch (emailErr) {
+        // eslint-disable-next-line no-console
+        console.warn("[email] mentor-update (reviewed) failed:", emailErr);
+      }
     } catch (e) {
       alert(e?.message || "Failed to mark as reviewed.");
     } finally {
@@ -364,6 +381,22 @@ export default function MentorInternDetail() {
 
       if (error) throw error;
 
+      // Best-effort: mentor -> intern email notification for meeting scheduling.
+      try {
+        const task = tasks.find((x) => x.id === meetingTaskId);
+        await sendMentorUpdateEmail({
+          internId,
+          mentorId: user?.id,
+          taskTitle: task?.work_title || "Untitled",
+          status: "meeting_scheduled",
+          remarks: meetingAgenda?.trim() || null,
+          meetingDatetime: dtIso,
+        });
+      } catch (emailErr) {
+        // eslint-disable-next-line no-console
+        console.warn("[email] mentor-update (meeting) failed:", emailErr);
+      }
+
       setMeetingOpen(false);
       setMeetingTaskId(null);
       setMeetingDate("");
@@ -402,6 +435,22 @@ export default function MentorInternDetail() {
         .eq("user_id", internId);
 
       if (error) throw error;
+
+      // Best-effort: mentor -> intern email notification for remarks update.
+      try {
+        const task = tasks.find((x) => x.id === remarksTaskId);
+        await sendMentorUpdateEmail({
+          internId,
+          mentorId: user?.id,
+          taskTitle: task?.work_title || "Untitled",
+          status: task?.status ?? null,
+          remarks: remarksText.trim(),
+          meetingDatetime: parseMeetingDetailsFromTask(task)?.datetime || null,
+        });
+      } catch (emailErr) {
+        // eslint-disable-next-line no-console
+        console.warn("[email] mentor-update (remarks) failed:", emailErr);
+      }
 
       setRemarksOpen(false);
       setRemarksTaskId(null);

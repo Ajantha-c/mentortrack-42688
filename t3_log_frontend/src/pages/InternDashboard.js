@@ -18,6 +18,7 @@ import {
   parseMeetingDetailsFromTask,
   subscribeToTasksChanges,
 } from "../lib/realtimeTasks";
+import { sendInternNewTaskEmail } from "../lib/backendEmailApi";
 
 /**
  * Intern Dashboard (T3 Log) — Supabase-backed
@@ -116,6 +117,20 @@ async function fetchProfile(userId) {
 
   if (error) throw error;
   return data || null;
+}
+
+async function fetchMentorUserId() {
+  // We assume there is at least one mentor profile row, per product requirements.
+  // If multiple mentors exist, this chooses the first (deterministic ordering is not guaranteed).
+  const { data, error } = await supabase
+    .from(PROFILES_TABLE)
+    .select("user_id")
+    .eq("role", "mentor")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.user_id || null;
 }
 
 function normalizeAttachments(attachments) {
@@ -426,6 +441,29 @@ export default function InternDashboard() {
           { ...updated, attachments: normalizeAttachments(updated.attachments) },
           ...(prev || []),
         ]);
+
+        // Best-effort: trigger intern -> mentor email notification for new task.
+        // This should not block task creation if the email service is unavailable.
+        try {
+          const mentorId = await fetchMentorUserId();
+          if (mentorId) {
+            await sendInternNewTaskEmail({
+              internId: user.id,
+              mentorId,
+              taskTitle: updated.work_title || workTitle.trim(),
+              createdAt,
+            });
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[email] No mentor profile found; skipping intern-new-task email."
+            );
+          }
+        } catch (emailErr) {
+          // eslint-disable-next-line no-console
+          console.warn("[email] intern-new-task email failed:", emailErr);
+        }
+
         resetForm();
       } else {
         // Edit mode here updates just text fields (file management handled in edit modal).
