@@ -18,7 +18,6 @@ import {
   parseMeetingDetailsFromTask,
   subscribeToTasksChanges,
 } from "../lib/realtimeTasks";
-import { sendInternNewTaskEmail } from "../lib/backendEmailApi";
 
 /**
  * Intern Dashboard (T3 Log) — Supabase-backed
@@ -442,28 +441,9 @@ export default function InternDashboard() {
           ...(prev || []),
         ]);
 
-        // Best-effort: trigger intern -> mentor email notification for new task.
-        // This should not block task creation if the email service is unavailable.
-        try {
-          const mentorId = await fetchMentorUserId();
-          if (mentorId) {
-            await sendInternNewTaskEmail({
-              internId: user.id,
-              mentorId,
-              taskTitle: updated.work_title || workTitle.trim(),
-              createdAt,
-            });
-          } else {
-            // eslint-disable-next-line no-console
-            console.warn(
-              "[email] No mentor profile found; skipping intern-new-task email."
-            );
-          }
-        } catch (emailErr) {
-          // eslint-disable-next-line no-console
-          console.warn("[email] intern-new-task email failed:", emailErr);
-        }
-
+        // IMPORTANT:
+        // Email notifications for new tasks are handled server-side via Supabase DB webhooks.
+        // Do NOT call backend notification endpoints directly from the browser (avoids CORS and keeps secrets server-side).
         resetForm();
       } else {
         // Edit mode here updates just text fields (file management handled in edit modal).
